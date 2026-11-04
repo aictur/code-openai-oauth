@@ -1,0 +1,86 @@
+{
+  "name": "code-openai-oauth",
+  "displayName": "OpenAI OAuth Models",
+  "description": "Use models from a local OpenAI OAuth server in VS Code Chat.",
+  "version": "0.0.1",
+  "type": "module",
+  "engines": {
+    "vscode": "^1.104.0"
+  },
+  "categories": [
+    "AI"
+  ],
+  "activationEvents": [],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "languageModelChatProviders": [
+      {
+        "vendor": "openai-oauth",
+        "displayName": "OpenAI OAuth",
+        "managementCommand": "code-openai-oauth.signIn"
+      }
+    ],
+    "commands": [
+      {
+        "command": "code-openai-oauth.signIn",
+        "title": "OpenAI OAuth: Sign In"
+      },
+      {
+        "command": "code-openai-oauth.refreshModels",
+        "title": "OpenAI OAuth: Refresh Models"
+      },
+      {
+        "command": "code-openai-oauth.status",
+        "title": "OpenAI OAuth: Server Status"
+      }
+    ],
+    "configuration": {
+      "title": "OpenAI OAuth",
+      "properties": {
+        "code-openai-oauth.serverUrl": {
+          "type": "string",
+          "default": "",
+          "description": "Optional existing server URL. Leave empty to start an extension-owned loopback server."
+        },
+        "code-openai-oauth.modelOverrides": {
+          "type": "object",
+          "default": {},
+          "description": "Per-model metadata overrides keyed by model ID (maxInputTokens, maxOutputTokens, toolCalling, imageInput)."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run package",
+    "compile": "npm run check-types && npm run lint && node esbuild.cjs",
+    "watch": "npm-run-all -p watch:*",
+    "watch:esbuild": "node esbuild.cjs --watch",
+    "watch:tsc": "tsc --noEmit --watch --project tsconfig.json",
+    "package": "npm run check-types && npm run lint && node esbuild.cjs --production",
+    "compile-tests": "tsc -p . --outDir out",
+    "watch-tests": "tsc -p . -w --outDir out",
+    "pretest": "npm run compile-tests && npm run compile",
+    "check-types": "tsc --noEmit",
+    "lint": "eslint src",
+    "test": "npm run compile-tests && npm run compile && vscode-test"
+  },
+  "dependencies": {
+    "openai-oauth": "2.0.0"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.104.0",
+    "@types/mocha": "^10.0.10",
+    "@types/node": "24.x",
+    "typescript-eslint": "^8.61.1",
+    "eslint": "^10.5.0",
+    "esbuild": "^0.28.1",
+    "npm-run-all": "^4.1.5",
+    "typescript": "^6.0.3",
+    "@vscode/test-cli": "^0.0.15",
+    "@vscode/test-electron": "^3.0.0"
+  },
+  "overrides": {
+    "diff": "^8.0.4",
+    "serialize-javascript": "^7.0.6"
+  }
+}
