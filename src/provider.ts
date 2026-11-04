@@ -1,5 +1,21 @@
 import * as vscode from 'vscode';
-import { streamChat } from './stream.js';
+import { reasoningEffort, reasoningEfforts, streamChat } from './stream.js';
+
+export interface ConfigurableModelInformation extends vscode.LanguageModelChatInformation {
+	readonly configurationSchema: {
+		readonly type: 'object';
+		readonly properties: {
+			readonly reasoningEffort: {
+				readonly type: 'string';
+				readonly title: string;
+				readonly group: 'navigation';
+				readonly enum: readonly string[];
+				readonly enumItemLabels: readonly string[];
+				readonly default: string;
+			};
+		};
+	};
+}
 
 const catalog: Record<string, [number, number]> = {
 	'gpt-5.5': [272000, 128000],
@@ -14,17 +30,17 @@ const catalog: Record<string, [number, number]> = {
 	'gpt-6.1-luna': [272000, 128000],
 };
 
-export class OAuthProvider implements vscode.LanguageModelChatProvider, vscode.Disposable {
+export class OAuthProvider implements vscode.LanguageModelChatProvider<ConfigurableModelInformation>, vscode.Disposable {
 	private readonly emitter = new vscode.EventEmitter<void>();
 	readonly onDidChangeLanguageModelChatInformation = this.emitter.event;
-	private models: vscode.LanguageModelChatInformation[] = [];
+	private models: ConfigurableModelInformation[] = [];
 
 	constructor(private readonly getUrl: () => Promise<string>) { }
 
 	refresh(): void { this.models = []; this.emitter.fire(); }
 	dispose(): void { this.emitter.dispose(); }
 
-	async provideLanguageModelChatInformation(_options: vscode.PrepareLanguageModelChatModelOptions, token: vscode.CancellationToken): Promise<vscode.LanguageModelChatInformation[]> {
+	async provideLanguageModelChatInformation(_options: vscode.PrepareLanguageModelChatModelOptions, token: vscode.CancellationToken): Promise<ConfigurableModelInformation[]> {
 		const controller = new AbortController();
 		const subscription = token.onCancellationRequested(() => controller.abort());
 		try {
@@ -39,9 +55,21 @@ export class OAuthProvider implements vscode.LanguageModelChatProvider, vscode.D
 			this.models = ids.map(id => {
 				const [input, output] = catalog[id] ?? [32000, 4096];
 				const custom = overrides[id] ?? {};
+				const levels = reasoningEfforts.filter(effort => effort !== 'none' && effort !== 'minimal');
+				const savedEffort = reasoningEffort(custom.reasoningEffort);
 				const limit = (value: unknown, fallback: number) => typeof value === 'number' && Number.isSafeInteger(value) && value > 0 ? value : fallback;
 				return {
 					id, name: id, family: id, version: id,
+					configurationSchema: {
+						type: 'object' as const,
+						properties: {
+							reasoningEffort: {
+								type: 'string' as const, title: 'Reasoning level', group: 'navigation' as const,
+								enum: levels,
+								enumItemLabels: levels, default: savedEffort && savedEffort !== 'none' && savedEffort !== 'minimal' ? savedEffort : 'medium',
+							},
+						},
+					},
 					maxInputTokens: limit(custom.maxInputTokens, input), maxOutputTokens: limit(custom.maxOutputTokens, output),
 					tooltip: `OpenAI OAuth (${catalog[id] ? 'catalog' : 'fallback'} token limits; configurable in settings)`,
 					capabilities: { toolCalling: custom.toolCalling === false ? false : true, imageInput: custom.imageInput === true },
@@ -56,7 +84,9 @@ export class OAuthProvider implements vscode.LanguageModelChatProvider, vscode.D
 
 	async provideLanguageModelChatResponse(model: vscode.LanguageModelChatInformation, messages: readonly vscode.LanguageModelChatRequestMessage[], options: vscode.ProvideLanguageModelChatResponseOptions, progress: vscode.Progress<vscode.LanguageModelResponsePart>, token: vscode.CancellationToken): Promise<void> {
 		if (token.isCancellationRequested) { return; }
-		await streamChat(await this.getUrl(), model.id, messages, options, progress, token);
+		const overrides = vscode.workspace.getConfiguration('code-openai-oauth').get<Record<string, Record<string, unknown>>>('modelOverrides', {});
+		const effort = reasoningEffort(options.modelOptions?.reasoningEffort) ?? reasoningEffort(overrides[model.id]?.reasoningEffort);
+		await streamChat(await this.getUrl(), model.id, messages, options, progress, token, effort);
 	}
 
 	async provideTokenCount(_model: vscode.LanguageModelChatInformation, text: string | vscode.LanguageModelChatRequestMessage, _token: vscode.CancellationToken): Promise<number> {

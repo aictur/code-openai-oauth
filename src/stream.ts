@@ -30,14 +30,21 @@ export function toMessages(messages: readonly vscode.LanguageModelChatRequestMes
 	return result;
 }
 
-export async function streamChat(url: string, model: string, messages: readonly vscode.LanguageModelChatRequestMessage[], options: vscode.ProvideLanguageModelChatResponseOptions, progress: vscode.Progress<vscode.LanguageModelResponsePart>, token: vscode.CancellationToken): Promise<void> {
+export const reasoningEfforts = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'] as const;
+export type ReasoningEffort = typeof reasoningEfforts[number];
+
+export function reasoningEffort(value: unknown): ReasoningEffort | undefined {
+	return reasoningEfforts.find(effort => effort === value);
+}
+
+export async function streamChat(url: string, model: string, messages: readonly vscode.LanguageModelChatRequestMessage[], options: vscode.ProvideLanguageModelChatResponseOptions, progress: vscode.Progress<vscode.LanguageModelResponsePart>, token: vscode.CancellationToken, effort?: ReasoningEffort): Promise<void> {
 	const controller = new AbortController();
 	const subscription = token.onCancellationRequested(() => controller.abort());
 	try {
 		if (token.isCancellationRequested) { return; }
 		const response = await fetch(`${url}/chat/completions`, {
 			method: 'POST', headers: { 'Content-Type': 'application/json' }, signal: controller.signal,
-			body: JSON.stringify({ model, messages: toMessages(messages), stream: true,
+			body: JSON.stringify({ model, messages: toMessages(messages), stream: true, reasoning_effort: effort,
 				tools: options.tools?.map(tool => ({ type: 'function', function: { name: tool.name, description: tool.description, parameters: tool.inputSchema ?? { type: 'object', properties: {} } } })),
 				tool_choice: options.tools?.length ? options.toolMode === vscode.LanguageModelChatToolMode.Required ? 'required' : 'auto' : 'none' }),
 		});

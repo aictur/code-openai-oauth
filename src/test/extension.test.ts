@@ -1,15 +1,48 @@
 import * as assert from 'assert';
 import * as vscode from 'vscode';
 import { OAuthProvider } from '../provider.js';
-import { streamChat, toMessages } from '../stream.js';
+import { reasoningEffort, streamChat, toMessages } from '../stream.js';
+import { mergeOverride, validateContext } from '../configure.js';
 
 suite('OpenAI OAuth chat', () => {
+	test('validates context sizes and preserves unrelated model settings', () => {
+		for (const value of ['1', '272000', '9007199254740991']) { assert.strictEqual(validateContext(value), undefined); }
+		for (const value of ['', '0', '-1', '1.5', '1e5', 'Infinity', '9007199254740992']) { assert.ok(validateContext(value)); }
+		const original = { first: { imageInput: true, reasoningEffort: 'low' }, second: { maxInputTokens: 4000 } };
+		const updated = mergeOverride(original, 'first', 'maxInputTokens', 8000);
+		assert.deepStrictEqual(updated, { first: { imageInput: true, reasoningEffort: 'low', maxInputTokens: 8000 }, second: { maxInputTokens: 4000 } });
+		assert.strictEqual(original.first.reasoningEffort, 'low');
+		assert.deepStrictEqual(mergeOverride(updated, 'first', 'maxInputTokens', undefined), original);
+		assert.deepStrictEqual(mergeOverride({ only: { reasoningEffort: 'low' } }, 'only', 'reasoningEffort', undefined), {});
+	});
+
+	test('sends only validated reasoning levels and omits the server default', async () => {
+		const originalFetch = globalThis.fetch;
+		const requests: Record<string, unknown>[] = [];
+		const source = new vscode.CancellationTokenSource();
+		globalThis.fetch = async (_url, init) => {
+			requests.push(JSON.parse(String(init?.body)));
+			return new Response('data: [DONE]\n\n');
+		};
+		try {
+			for (const value of ['high', undefined, 'invalid', 'none']) {
+				await streamChat('http://127.0.0.1:10531/v1', 'test-model', [], { toolMode: vscode.LanguageModelChatToolMode.Auto }, { report: () => undefined }, source.token, reasoningEffort(value));
+			}
+			assert.strictEqual(requests[0].reasoning_effort, 'high');
+			assert.ok(!('reasoning_effort' in requests[1]));
+			assert.ok(!('reasoning_effort' in requests[2]));
+			assert.strictEqual(requests[3].reasoning_effort, 'none');
+			assert.ok(requests.every(request => !('maxInputTokens' in request)));
+		} finally { source.dispose(); globalThis.fetch = originalFetch; }
+	});
+
 	test('activates the ESM extension and registers its commands', async () => {
 		const extension = vscode.extensions.all.find(candidate => candidate.packageJSON.name === 'code-openai-oauth' && candidate.extensionPath.replace(/\\/g, '/').endsWith('/code-openai-oauth'));
 		assert.ok(extension, 'Development extension is installed');
 		await extension.activate();
 		assert.ok(extension.isActive);
 		assert.ok((await vscode.commands.getCommands(true)).includes('code-openai-oauth.signIn'));
+		assert.ok((await vscode.commands.getCommands(true)).includes('code-openai-oauth.configureModel'));
 	});
 
 	test('discovers every unique model including unknown IDs', async () => {
@@ -20,7 +53,48 @@ suite('OpenAI OAuth chat', () => {
 			const models = await provider.provideLanguageModelChatInformation({ silent: true }, new vscode.CancellationTokenSource().token);
 			assert.deepStrictEqual(models.map(model => model.id), ['gpt-5.5', 'future-model']);
 			assert.strictEqual(models[1].maxInputTokens, 32000);
+			assert.strictEqual(models[0].configurationSchema.properties.reasoningEffort.title, 'Reasoning level');
+			assert.strictEqual(models[0].configurationSchema.properties.reasoningEffort.group, 'navigation');
+			assert.ok(models[0].configurationSchema.properties.reasoningEffort.enum.includes('high'));
+			assert.deepStrictEqual(models[0].configurationSchema.properties.reasoningEffort.enum, ['low', 'medium', 'high', 'xhigh', 'max', 'ultra']);
+			assert.deepStrictEqual(models[0].configurationSchema.properties.reasoningEffort.enumItemLabels, ['low', 'medium', 'high', 'xhigh', 'max', 'ultra']);
+			assert.strictEqual(models[0].configurationSchema.properties.reasoningEffort.default, 'medium');
 		} finally { provider.dispose(); globalThis.fetch = originalFetch; }
+	});
+
+	test('applies saved context and reasoning only to the configured model', async function () {
+		this.timeout(15000);
+		const configuration = vscode.workspace.getConfiguration('code-openai-oauth');
+		const original = configuration.inspect('modelOverrides')?.globalValue;
+		const originalFetch = globalThis.fetch;
+		const provider = new OAuthProvider(async () => 'http://127.0.0.1:10531/v1');
+		const source = new vscode.CancellationTokenSource();
+		const requests: Record<string, unknown>[] = [];
+		globalThis.fetch = async (_url, init) => {
+			if (!init?.body) { return Response.json({ data: [{ id: 'configured-test-model' }, { id: 'untouched-test-model' }] }); }
+			requests.push(JSON.parse(String(init.body)));
+			return new Response('data: [DONE]\n\n');
+		};
+		try {
+			await configuration.update('modelOverrides', { 'configured-test-model': { maxInputTokens: 8192, reasoningEffort: 'low' } }, vscode.ConfigurationTarget.Global);
+			const models = await provider.provideLanguageModelChatInformation({ silent: true }, source.token);
+			assert.strictEqual(models[0].maxInputTokens, 8192);
+			assert.strictEqual(models[1].maxInputTokens, 32000);
+			for (const model of models) {
+				await provider.provideLanguageModelChatResponse(model, [], { toolMode: vscode.LanguageModelChatToolMode.Auto }, { report: () => undefined }, source.token);
+			}
+			assert.strictEqual(requests[0].reasoning_effort, 'low');
+			assert.ok(!('reasoning_effort' in requests[1]));
+			for (const effort of ['high', 'none', 'default', 'invalid']) {
+				await provider.provideLanguageModelChatResponse(models[0], [], { toolMode: vscode.LanguageModelChatToolMode.Auto, modelOptions: { reasoningEffort: effort } }, { report: () => undefined }, source.token);
+			}
+			assert.deepStrictEqual(requests.slice(2).map(request => request.reasoning_effort), ['high', 'none', 'low', 'low']);
+			await configuration.update('modelOverrides', {}, vscode.ConfigurationTarget.Global);
+			assert.strictEqual((await provider.provideLanguageModelChatInformation({ silent: true }, source.token))[0].maxInputTokens, 32000);
+		} finally {
+			await configuration.update('modelOverrides', original, vscode.ConfigurationTarget.Global);
+			source.dispose(); provider.dispose(); globalThis.fetch = originalFetch;
+		}
 	});
 
 	test('uses catalog limits for GPT-6.1 variants returned by the server', async () => {

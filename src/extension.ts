@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import { OAuthProvider } from './provider.js';
+import { configureModel } from './configure.js';
 
 type RunningServer = Awaited<ReturnType<typeof import('openai-oauth').startOpenAIOAuthServer>>;
 let ownedServer: RunningServer | undefined;
@@ -59,6 +60,7 @@ export function activate(context: vscode.ExtensionContext): void {
 		} catch (error) { void vscode.window.showErrorMessage(`OpenAI OAuth sign-in failed: ${String(error)}`); }
 	}));
 	context.subscriptions.push(vscode.commands.registerCommand('code-openai-oauth.refreshModels', () => provider.refresh()));
+	context.subscriptions.push(vscode.commands.registerCommand('code-openai-oauth.configureModel', () => configureModel(provider)));
 	context.subscriptions.push(vscode.commands.registerCommand('code-openai-oauth.status', async () => {
 		try {
 			const url = await serverUrl();

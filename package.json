@@ -3,6 +3,7 @@
   "displayName": "OpenAI OAuth Models",
   "description": "Use models from a local OpenAI OAuth server in VS Code Chat.",
   "version": "0.0.1",
+  "license": "Apache-2.0",
   "type": "module",
   "engines": {
     "vscode": "^1.104.0"
@@ -32,6 +33,10 @@
       {
         "command": "code-openai-oauth.status",
         "title": "OpenAI OAuth: Server Status"
+      },
+      {
+        "command": "code-openai-oauth.configureModel",
+        "title": "OpenAI OAuth: Configure Model"
       }
     ],
     "configuration": {
@@ -45,7 +50,43 @@
         "code-openai-oauth.modelOverrides": {
           "type": "object",
           "default": {},
-          "description": "Per-model metadata overrides keyed by model ID (maxInputTokens, maxOutputTokens, toolCalling, imageInput)."
+          "description": "Per-model token limits, capabilities, and reasoning effort.",
+          "scope": "window",
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "maxInputTokens": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 9007199254740991
+              },
+              "maxOutputTokens": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 9007199254740991
+              },
+              "toolCalling": {
+                "type": "boolean"
+              },
+              "imageInput": {
+                "type": "boolean"
+              },
+              "reasoningEffort": {
+                "type": "string",
+                "enum": [
+                  "none",
+                  "minimal",
+                  "low",
+                  "medium",
+                  "high",
+                  "xhigh",
+                  "max",
+                  "ultra"
+                ],
+                "description": "Reasoning effort sent to the server. Supported values vary by model; omit to use the server default."
+              }
+            }
+          }
         }
       }
     }

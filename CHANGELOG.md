@@ -6,4 +6,6 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+- Expose native reasoning-level model menu controls on supporting VS Code versions.
+- Add per-model reasoning and maximum input token configuration through the Configure Model command and settings.
 - Initial release
