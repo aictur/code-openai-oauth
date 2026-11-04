@@ -5,6 +5,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { OAuthProvider } from '../provider.js';
 import { Diagnostics } from '../diagnostics.js';
+import { logServerEvent } from '../extension.js';
 import { reasoningEffort, streamChat, toMessages } from '../stream.js';
 import { mergeOverride, validateContext } from '../configure.js';
 
@@ -57,6 +58,7 @@ suite('OpenAI OAuth chat', () => {
 		try {
 			const models = await provider.provideLanguageModelChatInformation({ silent: true }, new vscode.CancellationTokenSource().token);
 			assert.deepStrictEqual(models.map(model => model.id), ['gpt-5.5', 'future-model']);
+			assert.ok(models.every(model => model.capabilities?.imageInput === true));
 			assert.strictEqual(models[1].maxInputTokens, 32000);
 			assert.strictEqual(models[0].configurationSchema.properties.reasoningEffort.title, 'Reasoning level');
 			assert.strictEqual(models[0].configurationSchema.properties.reasoningEffort.group, 'navigation');
@@ -81,10 +83,12 @@ suite('OpenAI OAuth chat', () => {
 			return new Response('data: [DONE]\n\n');
 		};
 		try {
-			await configuration.update('modelOverrides', { 'configured-test-model': { maxInputTokens: 8192, reasoningEffort: 'low' } }, vscode.ConfigurationTarget.Global);
+			await configuration.update('modelOverrides', { 'configured-test-model': { maxInputTokens: 8192, reasoningEffort: 'low', imageInput: false } }, vscode.ConfigurationTarget.Global);
 			const models = await provider.provideLanguageModelChatInformation({ silent: true }, source.token);
 			assert.strictEqual(models[0].maxInputTokens, 8192);
 			assert.strictEqual(models[1].maxInputTokens, 32000);
+			assert.strictEqual(models[0].capabilities?.imageInput, false);
+			assert.strictEqual(models[1].capabilities?.imageInput, true);
 			for (const model of models) {
 				await provider.provideLanguageModelChatResponse(model, [], { toolMode: vscode.LanguageModelChatToolMode.Auto }, { report: () => undefined }, source.token);
 			}
@@ -126,6 +130,56 @@ suite('OpenAI OAuth chat', () => {
 			{ role: 'assistant', content: '', tool_calls: [{ id: 'call-1', type: 'function', function: { name: 'lookup', arguments: '{"query":"hello"}' } }] },
 			{ role: 'tool', tool_call_id: 'call-1', content: 'found' },
 		]);
+	});
+
+	test('sends user images alongside text in chat requests', async () => {
+		const originalFetch = globalThis.fetch;
+		let request: Record<string, unknown> = {};
+		const events: string[] = [];
+		globalThis.fetch = async (_url, init) => {
+			request = JSON.parse(String(init?.body));
+			return new Response('data: [DONE]\n\n');
+		};
+		try {
+			const messages = [vscode.LanguageModelChatMessage.User([
+				new vscode.LanguageModelTextPart('What is in this image?'),
+				vscode.LanguageModelDataPart.image(new Uint8Array([0, 1, 255]), 'image/png'),
+			])];
+			await streamChat('http://127.0.0.1:10531/v1', 'test-model', messages, { toolMode: vscode.LanguageModelChatToolMode.Auto }, { report: () => undefined }, new vscode.CancellationTokenSource().token, undefined, event => events.push(event));
+			assert.ok(events.some(event => /request bytes=\d+ images=1 imageBytes=3/.test(event)));
+			assert.deepStrictEqual(request.messages, [{ role: 'user', content: [
+				{ type: 'text', text: 'What is in this image?' },
+				{ type: 'image_url', image_url: { url: 'data:image/png;base64,AAH/' } },
+			] }]);
+		} finally { globalThis.fetch = originalFetch; }
+	});
+
+	test('identifies network failures after serializing an image without logging content', async () => {
+		const originalFetch = globalThis.fetch;
+		const events: string[] = [];
+		globalThis.fetch = async () => { throw new TypeError('fetch failed', { cause: Object.assign(new Error('private URL'), { code: 'ECONNRESET' }) }); };
+		try {
+			await assert.rejects(streamChat('http://127.0.0.1:10531/v1', 'test-model', [vscode.LanguageModelChatMessage.User([
+				new vscode.LanguageModelTextPart('private prompt'),
+				vscode.LanguageModelDataPart.image(new Uint8Array([0, 1, 255]), 'image/png'),
+			])], { toolMode: vscode.LanguageModelChatToolMode.Auto }, { report: () => undefined }, new vscode.CancellationTokenSource().token, undefined, event => events.push(event)), TypeError);
+			assert.ok(events.some(event => event.includes('failed phase=fetch') && event.includes('reason=TypeError cause=ECONNRESET')));
+			assert.ok(!events.join('\n').includes('private'));
+		} finally { globalThis.fetch = originalFetch; }
+	});
+
+	test('identifies a closed server connection before image response headers', async () => {
+		const originalFetch = globalThis.fetch;
+		const events: string[] = [];
+		globalThis.fetch = async () => { throw new TypeError('fetch failed', { cause: Object.assign(new Error('private URL'), { code: 'UND_ERR_SOCKET' }) }); };
+		try {
+			await assert.rejects(streamChat('http://127.0.0.1:10531/v1', 'test-model', [vscode.LanguageModelChatMessage.User([
+				new vscode.LanguageModelTextPart('private prompt'),
+				vscode.LanguageModelDataPart.image(new Uint8Array([0, 1, 255]), 'image/png'),
+			])], { toolMode: vscode.LanguageModelChatToolMode.Auto }, { report: () => undefined }, new vscode.CancellationTokenSource().token, undefined, event => events.push(event)), TypeError);
+			assert.ok(events.some(event => event.includes('cause=UND_ERR_SOCKET detail=local-server-closed-connection-before-headers')));
+			assert.ok(!events.join('\n').includes('private'));
+		} finally { globalThis.fetch = originalFetch; }
 	});
 
 	test('streams split text and tool argument frames', async () => {
@@ -171,6 +225,37 @@ suite('OpenAI OAuth chat', () => {
 			assert.ok(events.some(event => event.includes('reason=idle-timeout')));
 			assert.ok(!events.join('\n').includes(secret));
 			assert.ok(!events.join('\n').includes('private reply'));
+		} finally { globalThis.fetch = originalFetch; }
+	});
+
+	test('aborts an in-flight request when cancelled', async () => {
+		const originalFetch = globalThis.fetch;
+		const source = new vscode.CancellationTokenSource();
+		const events: string[] = [];
+		let fetchStarted: () => void = () => undefined;
+		const started = new Promise<void>(resolve => { fetchStarted = resolve; });
+		globalThis.fetch = async (_url, init) => new Promise<Response>((_resolve, reject) => {
+			init?.signal?.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')), { once: true });
+			fetchStarted();
+		});
+		try {
+			const request = streamChat('http://127.0.0.1:10531/v1', 'test-model', [], { toolMode: vscode.LanguageModelChatToolMode.Auto }, { report: () => undefined }, source.token, undefined, event => events.push(event));
+			await started;
+			source.cancel();
+			await assert.rejects(request, { name: 'AbortError' });
+			assert.ok(events.some(event => event.includes('cancelled phase=fetch')));
+			assert.ok(events.some(event => event.includes('failed phase=fetch') && event.includes('reason=AbortError')));
+			assert.ok(!events.some(event => event.includes('idle timeout')));
+		} finally { source.dispose(); globalThis.fetch = originalFetch; }
+	});
+
+	test('rejects a stream that closes without the completion marker', async () => {
+		const originalFetch = globalThis.fetch;
+		const parts: vscode.LanguageModelResponsePart[] = [];
+		globalThis.fetch = async () => new Response('data: {"choices":[{"delta":{"content":"partial"}}]}\n\n');
+		try {
+			await assert.rejects(streamChat('http://127.0.0.1:10531/v1', 'test-model', [], { toolMode: vscode.LanguageModelChatToolMode.Auto }, { report: part => parts.push(part) }, new vscode.CancellationTokenSource().token), /Chat stream ended without \[DONE\]/);
+			assert.deepStrictEqual(parts.map(part => (part as vscode.LanguageModelTextPart).value), ['partial']);
 		} finally { globalThis.fetch = originalFetch; }
 	});
 
@@ -220,10 +305,32 @@ suite('OpenAI OAuth chat', () => {
 			await diagnostics.flush();
 			assert.match(await fs.readFile(path.join(archive, `${today}.log`), 'utf8'), /\[warn\] recoverable/);
 			assert.ok(!(await fs.readFile(path.join(archive, `${today}.log`), 'utf8')).includes('hidden info'));
+			await configuration.update('diagnostics.level', 'info', vscode.ConfigurationTarget.Global);
+			logServerEvent(diagnostics, { type: 'chat_response', requestId: 'server-info', path: '/v1/chat/completions', status: 200, durationMs: 42, stream: true, usage: { inputTokens: 4, outputTokens: 2 } });
+			await diagnostics.flush();
+			assert.match(await fs.readFile(path.join(archive, `${today}.log`), 'utf8'), /\[info\] server response id=server-info status=200 duration=42ms/);
 			await configuration.update('diagnostics.level', 'trace', vscode.ConfigurationTarget.Global);
 			diagnostics.log('trace', 'chunk=1 bytes=42');
+			logServerEvent(diagnostics, { type: 'chat_request', requestId: 'server-1', path: '/v1/chat/completions', bodyKeys: ['messages'], messageCount: 1, messageRoles: ['user'], model: 'test-model', stream: true, toolCount: 0 });
+			logServerEvent(diagnostics, { type: 'chat_response', requestId: 'server-1', path: '/v1/chat/completions', status: 200, durationMs: 42, stream: true, usage: { inputTokens: 4, outputTokens: 2 } });
+			logServerEvent(diagnostics, { type: 'chat_error', requestId: 'server-2', path: '/v1/chat/completions', durationMs: 10, message: 'private prompt and credential' });
+			logServerEvent(diagnostics, { type: 'chat_error', requestId: 'server-3', path: '/v1/chat/completions', durationMs: 11, message: 'HTTP 413: UND_ERR_SOCKET private prompt' });
+			logServerEvent(diagnostics, { type: 'chat_error', requestId: 'server-4', path: '/v1/chat/completions', durationMs: 12, message: 'private prompt invalid_image' });
+			logServerEvent(diagnostics, { type: 'chat_error', requestId: 'server-5', path: '/v1/chat/completions', durationMs: 13, message: 'Image rejected: private URL' });
+			logServerEvent(diagnostics, { type: 'chat_error', requestId: 'server-6', path: '/v1/chat/completions', durationMs: 9, message: 'AI_DownloadError: Failed to download URL data:image/png;base64,PRIVATE' });
 			await diagnostics.flush();
-			assert.match(await fs.readFile(path.join(archive, `${today}.log`), 'utf8'), /\[trace\] chunk=1 bytes=42/);
+			const log = await fs.readFile(path.join(archive, `${today}.log`), 'utf8');
+			assert.match(log, /\[trace\] chunk=1 bytes=42/);
+			assert.match(log, /server request id=server-1 model=test-model messages=1 roles=user tools=0 stream=true/);
+			assert.match(log, /server response id=server-1 status=200 duration=42ms stream=true.*inputTokens=4 outputTokens=2/);
+			assert.match(log, /server error id=server-2 duration=10ms type=unknown category=upstream-error/);
+			assert.match(log, /server error id=server-3 duration=11ms type=unknown category=upstream-error status=413 code=UND_ERR_SOCKET/);
+			assert.match(log, /server error id=server-4 duration=12ms type=unknown category=invalid_image/);
+			assert.match(log, /server error id=server-5 duration=13ms type=unknown category=image-error/);
+			assert.match(log, /server error id=server-6 duration=9ms type=AI_DownloadError category=image-conversion signals=image,base64,data,url,download,failed messageLength=\d+ fingerprint=[0-9a-f]{12}/);
+			assert.ok(!log.includes('private prompt and credential'));
+			assert.ok(!log.includes('private prompt'));
+			assert.ok(!log.includes('PRIVATE'));
 			await assert.rejects(fs.access(path.join(archive, '2000-01-01.log')));
 			await configuration.update('diagnostics.retentionDays', 0, vscode.ConfigurationTarget.Global);
 			diagnostics.updateRetention();

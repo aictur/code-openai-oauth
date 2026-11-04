@@ -55,11 +55,16 @@ export async function streamChat(url: string, model: string, messages: readonly 
 		if (token.isCancellationRequested) { return; }
 		log?.(`chat ${requestId} start model=${model} messages=${messages.length} tools=${options.tools?.length ?? 0}`, 'info');
 		resetTimer();
+		phase = 'serialize';
+		const imageParts = messages.flatMap(message => message.content).filter((part): part is vscode.LanguageModelDataPart => part instanceof vscode.LanguageModelDataPart && part.mimeType.startsWith('image/'));
+		const body = JSON.stringify({ model, messages: toMessages(messages), stream: true, reasoning_effort: effort,
+			tools: options.tools?.map(tool => ({ type: 'function', function: { name: tool.name, description: tool.description, parameters: tool.inputSchema ?? { type: 'object', properties: {} } } })),
+			tool_choice: options.tools?.length ? options.toolMode === vscode.LanguageModelChatToolMode.Required ? 'required' : 'auto' : 'none' });
+		log?.(`chat ${requestId} request bytes=${Buffer.byteLength(body)} images=${imageParts.length} imageBytes=${imageParts.reduce((total, part) => total + part.data.byteLength, 0)}`, 'info');
+		phase = 'fetch';
 		const response = await fetch(`${url}/chat/completions`, {
 			method: 'POST', headers: { 'Content-Type': 'application/json' }, signal: controller.signal,
-			body: JSON.stringify({ model, messages: toMessages(messages), stream: true, reasoning_effort: effort,
-				tools: options.tools?.map(tool => ({ type: 'function', function: { name: tool.name, description: tool.description, parameters: tool.inputSchema ?? { type: 'object', properties: {} } } })),
-				tool_choice: options.tools?.length ? options.toolMode === vscode.LanguageModelChatToolMode.Required ? 'required' : 'auto' : 'none' }),
+			body,
 		});
 		log?.(`chat ${requestId} headers status=${response.status} elapsed=${Date.now() - started}ms`, 'debug');
 		phase = 'stream';
@@ -115,7 +120,9 @@ export async function streamChat(url: string, model: string, messages: readonly 
 		}
 		log?.(`chat ${requestId} done elapsed=${Date.now() - started}ms chunks=${chunks} frames=${frames} toolCalls=${calls.size}`, 'info');
 	} catch (error) {
-		log?.(`chat ${requestId} failed phase=${phase} elapsed=${Date.now() - started}ms chunks=${chunks} frames=${frames} reason=${timedOut ? 'idle-timeout' : error instanceof Error ? error.name : 'unknown'}`, 'error');
+		const cause = error instanceof Error ? (error as Error & { cause?: unknown }).cause : undefined;
+		const code = cause && typeof cause === 'object' && 'code' in cause && typeof cause.code === 'string' && /^[A-Z][A-Z0-9_]{1,40}$/.test(cause.code) ? cause.code : undefined;
+		log?.(`chat ${requestId} failed phase=${phase} elapsed=${Date.now() - started}ms chunks=${chunks} frames=${frames} reason=${timedOut ? 'idle-timeout' : error instanceof Error ? error.name : 'unknown'}${code ? ` cause=${code}` : ''}${code === 'UND_ERR_SOCKET' && phase === 'fetch' ? ' detail=local-server-closed-connection-before-headers' : ''}`, 'error');
 		if (timedOut) { throw new Error(`Chat request idle for ${idleTimeoutMs}ms during ${phase}`); }
 		throw error;
 	} finally {

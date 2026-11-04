@@ -75,7 +75,7 @@ export class OAuthProvider implements vscode.LanguageModelChatProvider<Configura
 					},
 					maxInputTokens: limit(custom.maxInputTokens, input), maxOutputTokens: limit(custom.maxOutputTokens, output),
 					tooltip: `OpenAI OAuth (${catalog[id] ? 'catalog' : 'fallback'} token limits; configurable in settings)`,
-					capabilities: { toolCalling: custom.toolCalling === false ? false : true, imageInput: custom.imageInput === true },
+					capabilities: { toolCalling: custom.toolCalling === false ? false : true, imageInput: custom.imageInput !== false },
 				};
 			});
 			this.log?.log('info', `model discovery completed count=${this.models.length}`);

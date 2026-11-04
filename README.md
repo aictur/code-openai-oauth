@@ -27,7 +27,7 @@ Maximum input tokens is the input capacity advertised to VS Code, not a combined
 
 - `code-openai-oauth.serverUrl`: Optional existing loopback HTTP server URL such as `http://127.0.0.1:10531/v1`. The extension does not own that server. Remote URLs are rejected because the upstream proxy uses your OAuth session without authenticating HTTP clients.
 - `code-openai-oauth.idleTimeoutSeconds`: Seconds without network progress before a chat request aborts (1-3600, default 180). New requests pick up changes; this is not a total response deadline.
-- `code-openai-oauth.diagnostics.level`: `off`, `error`, `warn`, `info` (default), `debug`, or `trace`, in increasing detail. Warn includes recoverable model discovery failures; debug adds connection and first-chunk milestones; trace adds per-chunk byte counts. Logs contain metadata only, not chat content. VS Code's Output channel log level may independently hide entries in the channel; the extension archive follows this setting.
+- `code-openai-oauth.diagnostics.level`: `off`, `error`, `warn`, `info` (default), `debug`, or `trace`, in increasing detail. Info includes outgoing JSON size, image count and bytes, extension-owned server startup and chat request/response summaries; debug adds connection and first-chunk milestones; trace adds per-chunk byte counts. Server startup, listener, and chat errors log safe categories and recognized HTTP status or transport codes at error level, not raw upstream error messages. Unknown server errors include allowlisted technical signals, a message length, and a short fingerprint to compare repeated failures without exposing their text. An image request with `cause=UND_ERR_SOCKET detail=local-server-closed-connection-before-headers` reached the local server but lost the connection before response headers; inspect nearby `server error` entries for a category or status. Logs contain metadata only, not chat content. An external server's internal logs are not captured; inspect that server separately. VS Code's Output channel log level may independently hide entries in the channel; the extension archive follows this setting.
 - `code-openai-oauth.diagnostics.retentionDays`: Keep extension-owned daily archives for 0-365 days (default 7). Zero deletes existing archives and disables new ones. VS Code manages Output channel retention independently. Run **OpenAI OAuth: Show Logs** to see the current channel; archived logs live under the extension's global storage `diagnostics/` folder.
 - `code-openai-oauth.modelOverrides`: Per-model token limits, reasoning effort, and capability flags. Example:
 
@@ -39,13 +39,13 @@ Maximum input tokens is the input capacity advertised to VS Code, not a combined
 			"maxOutputTokens": 128000,
 			"reasoningEffort": "high",
 			"toolCalling": true,
-			"imageInput": true
+			"imageInput": false
 		}
 	}
 }
 ```
 
-Model IDs come from `/v1/models`. That endpoint does not report token limits or capabilities, so known IDs use catalog values and unknown IDs use a 32,000 input / 4,096 output fallback. Image input is off unless explicitly enabled; tool calling is on by default. Token counting is approximate. Adjust metadata to match your models.
+Model IDs come from `/v1/models`. That endpoint does not report token limits or capabilities, so known IDs use catalog values and unknown IDs use a 32,000 input / 4,096 output fallback. Image input and tool calling are on by default. Set `imageInput` to `false` for a model that does not accept images; otherwise image requests to an unsupported model may fail upstream. Token counting is approximate. Adjust metadata to match your models.
 
 Reasoning levels are `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, and `ultra`. Support varies by model; unsupported levels can produce an upstream error. Omit `reasoningEffort` to use the server default. Invalid reasoning values are ignored; invalid token limits fall back to catalog values.
 
@@ -53,7 +53,7 @@ The extension provides Chat models, not inline completions or profile-scoped Cus
 
 ## Development
 
-Run `npm test` for VS Code tests, `npm run compile` for a development build, and `npm run build:production` (or `npm run package`) for a minified build. Run `npm run install:local` to compile, package, and install a development VSIX into the VS Code instance on your `code` CLI path; reload that window to use the update. `vsce package` also runs the development build through `vscode:prepublish`. A live chat test needs working OAuth credentials; automated tests use mocked HTTP responses.
+Run `npm test` for VS Code extension-host tests, or select **Extension Tests** in Run and Debug to debug them in VS Code. Run `npm run compile` for a development build, and `npm run build:production` (or `npm run package`) for a minified build. Run `npm run install:local` to compile, package, and install a development VSIX into the VS Code instance on your `code` CLI path; reload that window to use the update. `vsce package` also runs the development build through `vscode:prepublish`. A live chat test needs working OAuth credentials; automated tests use mocked HTTP responses.
 
 ## License
 
