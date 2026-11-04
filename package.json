@@ -4,6 +4,10 @@
   "description": "Use models from a local OpenAI OAuth server in VS Code Chat.",
   "version": "0.0.1",
   "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/aictur/code-openai-oauth.git"
+  },
   "type": "module",
   "engines": {
     "vscode": "^1.104.0"
