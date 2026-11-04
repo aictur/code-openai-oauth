@@ -337,8 +337,28 @@ suite('OpenAI OAuth chat', () => {
 			logServerEvent(diagnostics, { type: 'chat_error', requestId: 'server-4', path: '/v1/chat/completions', durationMs: 12, message: 'private prompt invalid_image' });
 			logServerEvent(diagnostics, { type: 'chat_error', requestId: 'server-5', path: '/v1/chat/completions', durationMs: 13, message: 'Image rejected: private URL' });
 			logServerEvent(diagnostics, { type: 'chat_error', requestId: 'server-6', path: '/v1/chat/completions', durationMs: 9, message: 'AI_DownloadError: Failed to download URL data:image/png;base64,PRIVATE' });
+			const statusCases: [string, string | undefined][] = [
+				['status 413', '413'],
+				['status: 413', '413'],
+				['status=413', '413'],
+				['STATUS \t: \n429', '429'],
+				['status\t=\t500', '500'],
+				['status413', '413'],
+				['status 099', undefined],
+				['status 600', undefined],
+				['status 4130', undefined],
+				[`status${' '.repeat(10000)}x`, undefined]
+			];
+			for (const [index, [message]] of statusCases.entries()) {
+				logServerEvent(diagnostics, { type: 'chat_error', requestId: `status-case-${index}`, path: '/v1/chat/completions', durationMs: 1, message: `${message} private prompt` });
+			}
 			await diagnostics.flush();
 			const log = await fs.readFile(path.join(archive, `${today}.log`), 'utf8');
+			for (const [index, [, expectedStatus]] of statusCases.entries()) {
+				const entry = log.split('\n').find(line => line.includes(`server error id=status-case-${index} `));
+				assert.ok(entry);
+				assert.strictEqual(/ status=(\d+)/.exec(entry)?.[1], expectedStatus);
+			}
 			assert.match(log, /\[trace\] chunk=1 bytes=42/);
 			assert.match(log, /server request id=server-1 model=test-model messages=1 roles=user tools=0 stream=true/);
 			assert.match(log, /server response id=server-1 status=200 duration=42ms stream=true.*inputTokens=4 outputTokens=2/);

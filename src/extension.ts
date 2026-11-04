@@ -19,7 +19,7 @@ export function logServerEvent(log: Diagnostics, event: ServerLogEvent): void {
 			log.log('info', `server response id=${event.requestId} status=${event.status} duration=${event.durationMs}ms stream=${event.stream} finish=${event.finishReason ?? 'unknown'} inputTokens=${event.usage.inputTokens ?? 'unknown'} outputTokens=${event.usage.outputTokens ?? 'unknown'}`);
 			break;
 		case 'chat_error':
-			const status = /\b(?:HTTP\s*|status\s*[:=]?\s*)([1-5]\d\d)\b/i.exec(event.message)?.[1];
+			const status = /\b(?:HTTP\s*|status\s*(?:[:=]\s*)?)([1-5]\d\d)\b/i.exec(event.message)?.[1];
 			const code = /\b(?:ECONNRESET|ECONNREFUSED|ETIMEDOUT|UND_ERR_[A-Z_]+)\b/.exec(event.message)?.[0];
 			const errorKind = /\b(?:AI_[A-Za-z]+Error|[A-Za-z]+Error|fetch failed)\b/.exec(event.message)?.[0] ?? 'unknown';
 			const category = /\b(?:invalid_image|unsupported_image|image_too_large|context_length_exceeded|invalid_request_error|rate_limit_exceeded)\b/i.exec(event.message)?.[0].toLowerCase()
