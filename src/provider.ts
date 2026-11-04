@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import { reasoningEffort, reasoningEfforts, streamChat } from './stream.js';
+import { Diagnostics } from './diagnostics.js';
 
 export interface ConfigurableModelInformation extends vscode.LanguageModelChatInformation {
 	readonly configurationSchema: {
@@ -35,7 +36,7 @@ export class OAuthProvider implements vscode.LanguageModelChatProvider<Configura
 	readonly onDidChangeLanguageModelChatInformation = this.emitter.event;
 	private models: ConfigurableModelInformation[] = [];
 
-	constructor(private readonly getUrl: () => Promise<string>) { }
+	constructor(private readonly getUrl: () => Promise<string>, private readonly log?: Diagnostics) { }
 
 	refresh(): void { this.models = []; this.emitter.fire(); }
 	dispose(): void { this.emitter.dispose(); }
@@ -46,7 +47,9 @@ export class OAuthProvider implements vscode.LanguageModelChatProvider<Configura
 		try {
 			if (token.isCancellationRequested) { return []; }
 			const url = await this.getUrl();
+			this.log?.log('info', 'model discovery started');
 			const response = await fetch(`${url}/models`, { signal: controller.signal });
+			this.log?.log('info', `model discovery HTTP ${response.status}`);
 			if (!response.ok) { throw new Error(`Models endpoint returned HTTP ${response.status}`); }
 			const body: unknown = await response.json();
 			if (!body || typeof body !== 'object' || !('data' in body) || !Array.isArray(body.data)) { throw new Error('Invalid /v1/models response'); }
@@ -75,9 +78,10 @@ export class OAuthProvider implements vscode.LanguageModelChatProvider<Configura
 					capabilities: { toolCalling: custom.toolCalling === false ? false : true, imageInput: custom.imageInput === true },
 				};
 			});
+			this.log?.log('info', `model discovery completed count=${this.models.length}`);
 			return this.models;
 		} catch (error) {
-			if (!token.isCancellationRequested) { console.error('OpenAI OAuth model discovery:', error); }
+			if (!token.isCancellationRequested) { this.log?.log('warn', `model discovery failed type=${error instanceof Error ? error.name : 'unknown'}`); }
 			return this.models;
 		} finally { subscription.dispose(); }
 	}
@@ -86,7 +90,15 @@ export class OAuthProvider implements vscode.LanguageModelChatProvider<Configura
 		if (token.isCancellationRequested) { return; }
 		const overrides = vscode.workspace.getConfiguration('code-openai-oauth').get<Record<string, Record<string, unknown>>>('modelOverrides', {});
 		const effort = reasoningEffort(options.modelOptions?.reasoningEffort) ?? reasoningEffort(overrides[model.id]?.reasoningEffort);
-		await streamChat(await this.getUrl(), model.id, messages, options, progress, token, effort);
+		const configuredTimeout = vscode.workspace.getConfiguration('code-openai-oauth').get<number>('idleTimeoutSeconds', 180);
+		const idleTimeoutMs = Number.isSafeInteger(configuredTimeout) && configuredTimeout >= 1 && configuredTimeout <= 3600 ? configuredTimeout * 1000 : 180000;
+		this.log?.log('info', `chat resolving server model=${model.id}`);
+		try {
+			await streamChat(await this.getUrl(), model.id, messages, options, progress, token, effort, (message, level) => this.log?.log(level, message), idleTimeoutMs);
+		} catch (error) {
+			this.log?.log('error', `chat provider failed model=${model.id} type=${error instanceof Error ? error.name : 'unknown'}`);
+			throw error;
+		}
 	}
 
 	async provideTokenCount(_model: vscode.LanguageModelChatInformation, text: string | vscode.LanguageModelChatRequestMessage, _token: vscode.CancellationToken): Promise<number> {

@@ -26,6 +26,9 @@ Run **OpenAI OAuth: Configure Model** from the Command Palette, choose a model, 
 Maximum input tokens is the input capacity advertised to VS Code, not a combined input/output budget. It does not increase the model's actual capacity or truncate requests locally. Use a limit supported by your model.
 
 - `code-openai-oauth.serverUrl`: Optional existing loopback HTTP server URL such as `http://127.0.0.1:10531/v1`. The extension does not own that server. Remote URLs are rejected because the upstream proxy uses your OAuth session without authenticating HTTP clients.
+- `code-openai-oauth.idleTimeoutSeconds`: Seconds without network progress before a chat request aborts (1-3600, default 180). New requests pick up changes; this is not a total response deadline.
+- `code-openai-oauth.diagnostics.level`: `off`, `error`, `warn`, `info` (default), `debug`, or `trace`, in increasing detail. Warn includes recoverable model discovery failures; debug adds connection and first-chunk milestones; trace adds per-chunk byte counts. Logs contain metadata only, not chat content. VS Code's Output channel log level may independently hide entries in the channel; the extension archive follows this setting.
+- `code-openai-oauth.diagnostics.retentionDays`: Keep extension-owned daily archives for 0-365 days (default 7). Zero deletes existing archives and disables new ones. VS Code manages Output channel retention independently. Run **OpenAI OAuth: Show Logs** to see the current channel; archived logs live under the extension's global storage `diagnostics/` folder.
 - `code-openai-oauth.modelOverrides`: Per-model token limits, reasoning effort, and capability flags. Example:
 
 ```json
@@ -50,7 +53,7 @@ The extension provides Chat models, not inline completions or profile-scoped Cus
 
 ## Development
 
-Run `npm test` for VS Code tests, `npm run package` for a production build, and `npx @vscode/vsce package` for a VSIX. A live chat test needs working OAuth credentials; automated tests use mocked HTTP responses.
+Run `npm test` for VS Code tests, `npm run compile` for a development build, and `npm run build:production` (or `npm run package`) for a minified build. Run `npm run install:local` to compile, package, and install a development VSIX into the VS Code instance on your `code` CLI path; reload that window to use the update. `vsce package` also runs the development build through `vscode:prepublish`. A live chat test needs working OAuth credentials; automated tests use mocked HTTP responses.
 
 ## License
 

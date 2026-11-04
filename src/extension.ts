@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import { OAuthProvider } from './provider.js';
 import { configureModel } from './configure.js';
+import { Diagnostics } from './diagnostics.js';
 
 type RunningServer = Awaited<ReturnType<typeof import('openai-oauth').startOpenAIOAuthServer>>;
 let ownedServer: RunningServer | undefined;
@@ -37,8 +38,14 @@ export async function stopServer(): Promise<void> {
 }
 
 export function activate(context: vscode.ExtensionContext): void {
-	const provider = new OAuthProvider(serverUrl);
+	const log = vscode.window.createOutputChannel('OpenAI OAuth', { log: true });
+	context.subscriptions.push(log);
+	const diagnostics = new Diagnostics(log, context.globalStorageUri);
+	context.subscriptions.push(diagnostics);
+	diagnostics.log('info', 'extension activated');
+	const provider = new OAuthProvider(serverUrl, diagnostics);
 	context.subscriptions.push(provider, vscode.lm.registerLanguageModelChatProvider('openai-oauth', provider));
+	context.subscriptions.push(vscode.commands.registerCommand('code-openai-oauth.showLogs', () => log.show()));
 	context.subscriptions.push(vscode.commands.registerCommand('code-openai-oauth.signIn', async () => {
 		const choice = await vscode.window.showWarningMessage('Sign in to OpenAI OAuth? This saves credentials in the upstream Codex auth file.', 'Sign In');
 		if (choice !== 'Sign In') { return; }
@@ -57,7 +64,7 @@ export function activate(context: vscode.ExtensionContext): void {
 			await stopServer();
 			provider.refresh();
 			void vscode.window.showInformationMessage('OpenAI OAuth sign-in completed.');
-		} catch (error) { void vscode.window.showErrorMessage(`OpenAI OAuth sign-in failed: ${String(error)}`); }
+		} catch (error) { diagnostics.log('error', `sign-in failed type=${error instanceof Error ? error.name : 'unknown'}`); void vscode.window.showErrorMessage(`OpenAI OAuth sign-in failed: ${String(error)}`); }
 	}));
 	context.subscriptions.push(vscode.commands.registerCommand('code-openai-oauth.refreshModels', () => provider.refresh()));
 	context.subscriptions.push(vscode.commands.registerCommand('code-openai-oauth.configureModel', () => configureModel(provider)));
@@ -65,11 +72,12 @@ export function activate(context: vscode.ExtensionContext): void {
 		try {
 			const url = await serverUrl();
 			void vscode.window.showInformationMessage(`OpenAI OAuth server: ${url} (${configuredUrl() ? 'external' : 'extension-owned'})`);
-		} catch (error) { void vscode.window.showErrorMessage(`OpenAI OAuth: ${String(error)}`); }
+		} catch (error) { diagnostics.log('error', `server status failed type=${error instanceof Error ? error.name : 'unknown'}`); void vscode.window.showErrorMessage(`OpenAI OAuth: ${String(error)}`); }
 	}));
 	context.subscriptions.push(vscode.workspace.onDidChangeConfiguration(event => {
 		if (event.affectsConfiguration('code-openai-oauth.serverUrl')) { void stopServer().then(() => provider.refresh()); }
 		else if (event.affectsConfiguration('code-openai-oauth.modelOverrides')) { provider.refresh(); }
+		if (event.affectsConfiguration('code-openai-oauth.diagnostics.retentionDays')) { diagnostics.updateRetention(); }
 	}));
 }
 

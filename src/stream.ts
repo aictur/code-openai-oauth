@@ -37,17 +37,33 @@ export function reasoningEffort(value: unknown): ReasoningEffort | undefined {
 	return reasoningEfforts.find(effort => effort === value);
 }
 
-export async function streamChat(url: string, model: string, messages: readonly vscode.LanguageModelChatRequestMessage[], options: vscode.ProvideLanguageModelChatResponseOptions, progress: vscode.Progress<vscode.LanguageModelResponsePart>, token: vscode.CancellationToken, effort?: ReasoningEffort): Promise<void> {
+export async function streamChat(url: string, model: string, messages: readonly vscode.LanguageModelChatRequestMessage[], options: vscode.ProvideLanguageModelChatResponseOptions, progress: vscode.Progress<vscode.LanguageModelResponsePart>, token: vscode.CancellationToken, effort?: ReasoningEffort, log?: (message: string, level: 'error' | 'info' | 'debug' | 'trace') => void, idleTimeoutMs = 180000): Promise<void> {
 	const controller = new AbortController();
 	const subscription = token.onCancellationRequested(() => controller.abort());
+	const requestId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+	const started = Date.now();
+	let phase = 'fetch';
+	let chunks = 0;
+	let frames = 0;
+	let timedOut = false;
+	let timer: ReturnType<typeof setTimeout>;
+	const resetTimer = () => {
+		clearTimeout(timer);
+		timer = setTimeout(() => { timedOut = true; log?.(`chat ${requestId} idle timeout phase=${phase} after=${idleTimeoutMs}ms`, 'error'); controller.abort(); }, idleTimeoutMs);
+	};
 	try {
 		if (token.isCancellationRequested) { return; }
+		log?.(`chat ${requestId} start model=${model} messages=${messages.length} tools=${options.tools?.length ?? 0}`, 'info');
+		resetTimer();
 		const response = await fetch(`${url}/chat/completions`, {
 			method: 'POST', headers: { 'Content-Type': 'application/json' }, signal: controller.signal,
 			body: JSON.stringify({ model, messages: toMessages(messages), stream: true, reasoning_effort: effort,
 				tools: options.tools?.map(tool => ({ type: 'function', function: { name: tool.name, description: tool.description, parameters: tool.inputSchema ?? { type: 'object', properties: {} } } })),
 				tool_choice: options.tools?.length ? options.toolMode === vscode.LanguageModelChatToolMode.Required ? 'required' : 'auto' : 'none' }),
 		});
+		log?.(`chat ${requestId} headers status=${response.status} elapsed=${Date.now() - started}ms`, 'debug');
+		phase = 'stream';
+		resetTimer();
 		if (!response.ok || !response.body) { throw new Error(`Chat request failed (HTTP ${response.status}): ${(await response.text()).slice(0, 500)}`); }
 		const reader = response.body.getReader();
 		const decoder = new TextDecoder();
@@ -58,6 +74,10 @@ export async function streamChat(url: string, model: string, messages: readonly 
 			while (!done && !token.isCancellationRequested) {
 				const chunk = await reader.read();
 				if (chunk.done) { break; }
+				chunks++;
+				if (chunks === 1) { log?.(`chat ${requestId} first chunk elapsed=${Date.now() - started}ms`, 'debug'); }
+				log?.(`chat ${requestId} chunk=${chunks} bytes=${chunk.value.byteLength} elapsed=${Date.now() - started}ms`, 'trace');
+				resetTimer();
 				buffer += decoder.decode(chunk.value, { stream: true });
 				let boundary: number;
 				while ((boundary = buffer.search(/\r?\n\r?\n/)) !== -1) {
@@ -65,6 +85,7 @@ export async function streamChat(url: string, model: string, messages: readonly 
 				buffer = buffer.slice(boundary).replace(/^\r?\n\r?\n/, '');
 				const data = frame.split(/\r?\n/).filter(line => line.startsWith('data:')).map(line => line.slice(5).trimStart()).join('\n');
 				if (!data) { continue; }
+				frames++;
 				if (data === '[DONE]') { done = true; break; }
 				const payload = JSON.parse(data);
 				if (payload.error) { throw new Error(payload.error.message ?? 'Stream error'); }
@@ -92,5 +113,14 @@ export async function streamChat(url: string, model: string, messages: readonly 
 			if (!input || typeof input !== 'object' || Array.isArray(input)) { throw new Error('Tool call arguments must be an object'); }
 			progress.report(new vscode.LanguageModelToolCallPart(call.id, call.name, input));
 		}
-	} finally { subscription.dispose(); }
+		log?.(`chat ${requestId} done elapsed=${Date.now() - started}ms chunks=${chunks} frames=${frames} toolCalls=${calls.size}`, 'info');
+	} catch (error) {
+		log?.(`chat ${requestId} failed phase=${phase} elapsed=${Date.now() - started}ms chunks=${chunks} frames=${frames} reason=${timedOut ? 'idle-timeout' : error instanceof Error ? error.name : 'unknown'}`, 'error');
+		if (timedOut) { throw new Error(`Chat request idle for ${idleTimeoutMs}ms during ${phase}`); }
+		throw error;
+	} finally {
+		clearTimeout(timer!);
+		if (token.isCancellationRequested) { log?.(`chat ${requestId} cancelled phase=${phase} elapsed=${Date.now() - started}ms`, 'info'); }
+		subscription.dispose();
+	}
 }

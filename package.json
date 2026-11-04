@@ -41,6 +41,10 @@
       {
         "command": "code-openai-oauth.configureModel",
         "title": "OpenAI OAuth: Configure Model"
+      },
+      {
+        "command": "code-openai-oauth.showLogs",
+        "title": "OpenAI OAuth: Show Logs"
       }
     ],
     "configuration": {
@@ -50,6 +54,36 @@
           "type": "string",
           "default": "",
           "description": "Optional existing server URL. Leave empty to start an extension-owned loopback server."
+        },
+        "code-openai-oauth.idleTimeoutSeconds": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 3600,
+          "default": 180,
+          "scope": "window",
+          "description": "Seconds without network progress before aborting a chat request. Applies to new requests."
+        },
+        "code-openai-oauth.diagnostics.level": {
+          "type": "string",
+          "enum": [
+            "off",
+            "error",
+            "warn",
+            "info",
+            "debug",
+            "trace"
+          ],
+          "default": "info",
+          "scope": "window",
+          "description": "Minimum diagnostic detail emitted to the OpenAI OAuth Output channel and archive. Warn includes recoverable failures; debug adds connection milestones; trace adds chunk sizes."
+        },
+        "code-openai-oauth.diagnostics.retentionDays": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 365,
+          "default": 7,
+          "scope": "window",
+          "description": "Days to keep extension-owned daily diagnostic archives. Set to 0 to disable archiving. VS Code manages Output channel log retention separately."
         },
         "code-openai-oauth.modelOverrides": {
           "type": "object",
@@ -96,15 +130,16 @@
     }
   },
   "scripts": {
-    "vscode:prepublish": "npm run package",
+    "vscode:prepublish": "npm run compile",
     "compile": "npm run check-types && npm run lint && node esbuild.cjs",
     "watch": "npm-run-all -p watch:*",
     "watch:esbuild": "node esbuild.cjs --watch",
     "watch:tsc": "tsc --noEmit --watch --project tsconfig.json",
-    "package": "npm run check-types && npm run lint && node esbuild.cjs --production",
+    "build:production": "npm run check-types && npm run lint && node esbuild.cjs --production",
+    "package": "npm run build:production",
+    "install:local": "vsce package --out code-openai-oauth-dev.vsix && code --install-extension code-openai-oauth-dev.vsix --force",
     "compile-tests": "tsc -p . --outDir out",
     "watch-tests": "tsc -p . -w --outDir out",
-    "pretest": "npm run compile-tests && npm run compile",
     "check-types": "tsc --noEmit",
     "lint": "eslint src",
     "test": "npm run compile-tests && npm run compile && vscode-test"
@@ -113,16 +148,17 @@
     "openai-oauth": "2.0.0"
   },
   "devDependencies": {
-    "@types/vscode": "^1.104.0",
     "@types/mocha": "^10.0.10",
     "@types/node": "24.x",
-    "typescript-eslint": "^8.61.1",
-    "eslint": "^10.5.0",
+    "@types/vscode": "^1.104.0",
+    "@vscode/test-cli": "^0.0.15",
+    "@vscode/test-electron": "^3.0.0",
+    "@vscode/vsce": "^4.1.0",
     "esbuild": "^0.28.1",
+    "eslint": "^10.5.0",
     "npm-run-all": "^4.1.5",
     "typescript": "^6.0.3",
-    "@vscode/test-cli": "^0.0.15",
-    "@vscode/test-electron": "^3.0.0"
+    "typescript-eslint": "^8.61.1"
   },
   "overrides": {
     "diff": "^8.0.4",

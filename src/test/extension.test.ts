@@ -1,6 +1,10 @@
 import * as assert from 'assert';
 import * as vscode from 'vscode';
+import * as fs from 'node:fs/promises';
+import * as os from 'node:os';
+import * as path from 'node:path';
 import { OAuthProvider } from '../provider.js';
+import { Diagnostics } from '../diagnostics.js';
 import { reasoningEffort, streamChat, toMessages } from '../stream.js';
 import { mergeOverride, validateContext } from '../configure.js';
 
@@ -43,6 +47,7 @@ suite('OpenAI OAuth chat', () => {
 		assert.ok(extension.isActive);
 		assert.ok((await vscode.commands.getCommands(true)).includes('code-openai-oauth.signIn'));
 		assert.ok((await vscode.commands.getCommands(true)).includes('code-openai-oauth.configureModel'));
+		assert.ok((await vscode.commands.getCommands(true)).includes('code-openai-oauth.showLogs'));
 	});
 
 	test('discovers every unique model including unknown IDs', async () => {
@@ -146,5 +151,90 @@ suite('OpenAI OAuth chat', () => {
 			assert.strictEqual(request.tool_choice, 'required');
 			assert.deepStrictEqual(parts.map(part => part instanceof vscode.LanguageModelTextPart ? part.value : (part as vscode.LanguageModelToolCallPart).input), ['hello', { query: 'world' }]);
 		} finally { globalThis.fetch = originalFetch; }
+	});
+
+	test('records stream progress and aborts an idle response without logging content', async () => {
+		const originalFetch = globalThis.fetch;
+		const events: string[] = [];
+		const secret = 'private prompt text';
+		globalThis.fetch = async (_url, init) => new Response(new ReadableStream({
+			start(controller) {
+				controller.enqueue(new TextEncoder().encode('data: {"choices":[{"delta":{"content":"private reply"}}]}\n\n'));
+				init?.signal?.addEventListener('abort', () => controller.error(new Error('aborted')), { once: true });
+			},
+		}));
+		try {
+			await assert.rejects(streamChat('http://127.0.0.1:10531/v1', 'test-model', [{ role: vscode.LanguageModelChatMessageRole.User, name: undefined, content: [new vscode.LanguageModelTextPart(secret)] }], { toolMode: vscode.LanguageModelChatToolMode.Auto }, { report: () => undefined }, new vscode.CancellationTokenSource().token, undefined, (event, level) => events.push(`${level} ${event}`), 30), /idle for 30ms during stream/);
+			assert.ok(events.some(event => event.includes('first chunk')));
+			assert.ok(events.some(event => /^trace .* chunk=1 bytes=\d+/.test(event)));
+			assert.ok(events.some(event => event.includes('idle timeout phase=stream')));
+			assert.ok(events.some(event => event.includes('reason=idle-timeout')));
+			assert.ok(!events.join('\n').includes(secret));
+			assert.ok(!events.join('\n').includes('private reply'));
+		} finally { globalThis.fetch = originalFetch; }
+	});
+
+	test('uses the configured idle timeout for new chat requests', async function () {
+		this.timeout(15000);
+		const configuration = vscode.workspace.getConfiguration('code-openai-oauth');
+		const original = configuration.inspect('idleTimeoutSeconds')?.globalValue;
+		const originalFetch = globalThis.fetch;
+		const provider = new OAuthProvider(async () => 'http://127.0.0.1:10531/v1');
+		const source = new vscode.CancellationTokenSource();
+		globalThis.fetch = async (_url, init) => new Promise<Response>((_resolve, reject) => {
+			init?.signal?.addEventListener('abort', () => reject(new Error('aborted')), { once: true });
+		});
+		try {
+			await configuration.update('idleTimeoutSeconds', 1, vscode.ConfigurationTarget.Global);
+			await assert.rejects(provider.provideLanguageModelChatResponse({ id: 'test-model' } as vscode.LanguageModelChatInformation, [], { toolMode: vscode.LanguageModelChatToolMode.Auto }, { report: () => undefined }, source.token), /idle for 1000ms during fetch/);
+		} finally {
+			await configuration.update('idleTimeoutSeconds', original, vscode.ConfigurationTarget.Global);
+			source.dispose(); provider.dispose(); globalThis.fetch = originalFetch;
+		}
+	});
+
+	test('filters diagnostic levels and prunes the extension archive', async function () {
+		this.timeout(15000);
+		const configuration = vscode.workspace.getConfiguration('code-openai-oauth');
+		const originalLevel = configuration.inspect('diagnostics.level')?.globalValue;
+		const originalRetention = configuration.inspect('diagnostics.retentionDays')?.globalValue;
+		const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'oauth-diagnostics-'));
+		const channel = vscode.window.createOutputChannel('OpenAI OAuth test', { log: true });
+		const archive = path.join(directory, 'diagnostics');
+		try {
+			await configuration.update('diagnostics.level', 'error', vscode.ConfigurationTarget.Global);
+			await configuration.update('diagnostics.retentionDays', 7, vscode.ConfigurationTarget.Global);
+			const diagnostics = new Diagnostics(channel, vscode.Uri.file(directory));
+			await diagnostics.flush();
+			await fs.writeFile(path.join(archive, '2000-01-01.log'), 'old');
+			diagnostics.log('info', 'hidden');
+			diagnostics.log('warn', 'hidden warning');
+			diagnostics.log('error', 'visible');
+			await diagnostics.flush();
+			const today = new Date().toISOString().slice(0, 10);
+			assert.match(await fs.readFile(path.join(archive, `${today}.log`), 'utf8'), /visible/);
+			assert.ok(!(await fs.readFile(path.join(archive, `${today}.log`), 'utf8')).includes('hidden'));
+			await configuration.update('diagnostics.level', 'warn', vscode.ConfigurationTarget.Global);
+			diagnostics.log('warn', 'recoverable');
+			diagnostics.log('info', 'hidden info');
+			await diagnostics.flush();
+			assert.match(await fs.readFile(path.join(archive, `${today}.log`), 'utf8'), /\[warn\] recoverable/);
+			assert.ok(!(await fs.readFile(path.join(archive, `${today}.log`), 'utf8')).includes('hidden info'));
+			await configuration.update('diagnostics.level', 'trace', vscode.ConfigurationTarget.Global);
+			diagnostics.log('trace', 'chunk=1 bytes=42');
+			await diagnostics.flush();
+			assert.match(await fs.readFile(path.join(archive, `${today}.log`), 'utf8'), /\[trace\] chunk=1 bytes=42/);
+			await assert.rejects(fs.access(path.join(archive, '2000-01-01.log')));
+			await configuration.update('diagnostics.retentionDays', 0, vscode.ConfigurationTarget.Global);
+			diagnostics.updateRetention();
+			await diagnostics.flush();
+			await assert.rejects(fs.access(path.join(archive, `${today}.log`)));
+			diagnostics.dispose();
+		} finally {
+			channel.dispose();
+			await configuration.update('diagnostics.level', originalLevel, vscode.ConfigurationTarget.Global);
+			await configuration.update('diagnostics.retentionDays', originalRetention, vscode.ConfigurationTarget.Global);
+			await fs.rm(directory, { recursive: true, force: true });
+		}
 	});
 });
