@@ -1,6 +1,11 @@
 # OpenAI OAuth Models for VS Code
 
-Expose models from [openai-oauth](https://github.com/EvanZhouDev/openai-oauth) in the VS Code Chat model picker. The extension starts an extension-owned loopback server or connects to an existing local server. It does not modify `chatLanguageModels.json`.
+[EvanZhouDev/openai-oauth](https://github.com/EvanZhouDev/openai-oauth) lets you sign in with your ChatGPT account and access the models available to that account through a local OpenAI-compatible API, using your subscription, without a separate OpenAI API key.
+
+This VS Code extension brings those models into the Chat model picker so you can use them directly in the editor. It starts an extension-owned loopback server or connects to an existing local server, without modifying `chatLanguageModels.json`.
+
+> [!NOTE]
+> This project relies heavily on AI-assisted tools for development, including code generation and documentation. AI-generated contributions may contain errors; review and test the project before relying on it.
 
 ## Getting started
 
