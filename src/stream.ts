@@ -56,8 +56,9 @@ export async function streamChat(url: string, model: string, messages: readonly 
 		log?.(`chat ${requestId} start model=${model} messages=${messages.length} tools=${options.tools?.length ?? 0}`, 'info');
 		resetTimer();
 		phase = 'serialize';
+		const streaming = !/^gpt-6(?:\.1)?(?:-|$)/.test(model);
 		const imageParts = messages.flatMap(message => message.content).filter((part): part is vscode.LanguageModelDataPart => part instanceof vscode.LanguageModelDataPart && part.mimeType.startsWith('image/'));
-		const body = JSON.stringify({ model, messages: toMessages(messages), stream: true, reasoning_effort: effort,
+		const body = JSON.stringify({ model, messages: toMessages(messages), stream: streaming, reasoning_effort: effort,
 			tools: options.tools?.map(tool => ({ type: 'function', function: { name: tool.name, description: tool.description, parameters: tool.inputSchema ?? { type: 'object', properties: {} } } })),
 			tool_choice: options.tools?.length ? options.toolMode === vscode.LanguageModelChatToolMode.Required ? 'required' : 'auto' : 'none' });
 		log?.(`chat ${requestId} request bytes=${Buffer.byteLength(body)} images=${imageParts.length} imageBytes=${imageParts.reduce((total, part) => total + part.data.byteLength, 0)}`, 'info');
@@ -84,6 +85,7 @@ export async function streamChat(url: string, model: string, messages: readonly 
 				log?.(`chat ${requestId} chunk=${chunks} bytes=${chunk.value.byteLength} elapsed=${Date.now() - started}ms`, 'trace');
 				resetTimer();
 				buffer += decoder.decode(chunk.value, { stream: true });
+				if (!streaming) { continue; }
 				let boundary: number;
 				while ((boundary = buffer.search(/\r?\n\r?\n/)) !== -1) {
 				const frame = buffer.slice(0, boundary);
@@ -111,6 +113,18 @@ export async function streamChat(url: string, model: string, messages: readonly 
 			reader.releaseLock();
 		}
 		if (token.isCancellationRequested) { return; }
+		if (!streaming) {
+			const payload = JSON.parse(buffer + decoder.decode());
+			if (payload.error) { throw new Error(payload.error.message ?? 'Chat error'); }
+			if (!Array.isArray(payload.choices) || !payload.choices.length) { throw new Error('Chat response missing choices'); }
+			for (const choice of payload.choices) {
+				if (choice.message?.content) { progress.report(new vscode.LanguageModelTextPart(choice.message.content)); }
+				for (const call of choice.message?.tool_calls ?? []) {
+					calls.set(calls.size, { id: call.id, name: call.function?.name, arguments: call.function?.arguments ?? '' });
+				}
+			}
+			done = true;
+		}
 		if (!done) { throw new Error('Chat stream ended without [DONE]'); }
 		for (const call of calls.values()) {
 			if (!call.name) { throw new Error('Tool call missing function name'); }

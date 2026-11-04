@@ -1,9 +1,14 @@
 .vscode/**
 .vscode-test/**
+.github/**
+node_modules/**
 out/**
 src/**
 .gitignore
+.npmrc
 .yarnrc
+AGENTS.md
+**/*.vsix
 esbuild.cjs
 esbuild.js
 vsc-extension-quickstart.md

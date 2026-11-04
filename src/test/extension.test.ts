@@ -10,6 +10,25 @@ import { reasoningEffort, streamChat, toMessages } from '../stream.js';
 import { mergeOverride, validateContext } from '../configure.js';
 
 suite('OpenAI OAuth chat', () => {
+	test('uses non-streaming JSON for GPT-6 and GPT-6.1 only', async () => {
+		const originalFetch = globalThis.fetch;
+		const source = new vscode.CancellationTokenSource();
+		try {
+			for (const model of ['gpt-6', 'gpt-6-sol', 'gpt-6-astra', 'gpt-6-luna', 'gpt-6.1', 'gpt-6.1-sol', 'gpt-6.1-astra', 'gpt-6.1-luna', 'gpt-5.6-sol', 'gpt-6.10-sol']) {
+				const expectedStreaming = ['gpt-5.6-sol', 'gpt-6.10-sol'].includes(model);
+				const parts: vscode.LanguageModelResponsePart[] = [];
+				globalThis.fetch = async (_url, init) => {
+					assert.strictEqual(JSON.parse(String(init?.body)).stream, expectedStreaming);
+					return expectedStreaming ? new Response('data: [DONE]\n\n') : Response.json({ choices: [{ message: { content: 'Hello', tool_calls: [{ id: 'call-1', function: { name: 'lookup', arguments: '{"value":1}' } }] } }] });
+				};
+				await streamChat('http://127.0.0.1:10531/v1', model, [], { toolMode: vscode.LanguageModelChatToolMode.Auto }, { report: part => parts.push(part) }, source.token);
+				if (!expectedStreaming) {
+					assert.deepStrictEqual(parts, [new vscode.LanguageModelTextPart('Hello'), new vscode.LanguageModelToolCallPart('call-1', 'lookup', { value: 1 })]);
+				}
+			}
+		} finally { source.dispose(); globalThis.fetch = originalFetch; }
+	});
+
 	test('validates context sizes and preserves unrelated model settings', () => {
 		for (const value of ['1', '272000', '9007199254740991']) { assert.strictEqual(validateContext(value), undefined); }
 		for (const value of ['', '0', '-1', '1.5', '1e5', 'Infinity', '9007199254740992']) { assert.ok(validateContext(value)); }

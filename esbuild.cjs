@@ -35,7 +35,10 @@ async function main() {
 		sourcesContent: false,
 		platform: 'node',
 		outfile: 'dist/extension.js',
-		external: ['vscode', 'openai-oauth'],
+		external: ['vscode'],
+		banner: {
+			js: "import { createRequire } from 'node:module'; const require = createRequire(import.meta.url);",
+		},
 		logLevel: 'silent',
 		plugins: [
 			/* add to the end of plugins array */
