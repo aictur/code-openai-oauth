@@ -53,7 +53,24 @@ The extension provides Chat models, not inline completions or profile-scoped Cus
 
 ## Development
 
+Development and CI require Node.js 22+. Install with `npm ci --ignore-scripts` to use the committed lockfile without running dependency lifecycle scripts.
+
 Run `npm test` for VS Code extension-host tests, or select **Extension Tests** in Run and Debug to debug them in VS Code. Run `npm run compile` for a development build, and `npm run build:production` (or `npm run package`) for a minified build. Run `npm run install:local` to compile, package, and install a development VSIX into the VS Code instance on your `code` CLI path; reload that window to use the update. `vsce package` also runs the development build through `vscode:prepublish`. A live chat test needs working OAuth credentials; automated tests use mocked HTTP responses.
+
+## CI and security
+
+CI installs locked dependencies with lifecycle scripts disabled, tests under Xvfb, and builds the production bundle. A separate blocking audit checks production and development dependencies at every severity. Dependency Review rejects vulnerable dependency changes on pull requests; CodeQL runs security-and-quality analysis. Actions use immutable commit pins, checkout credentials are not persisted, and only CodeQL has security-event upload permission. Dependabot proposes weekly npm and action updates.
+
+With Docker and the `gh act` extension installed, run:
+
+```sh
+gh act pull_request -W .github/workflows/ci.yml -j verify -P ubuntu-24.04=catthehacker/ubuntu:act-24.04
+gh act pull_request -W .github/workflows/ci.yml -j audit -P ubuntu-24.04=catthehacker/ubuntu:act-24.04
+```
+
+The local runner image is a third-party execution environment, not the GitHub-hosted runner. Do not provide credentials or secrets to these local jobs. Dependency Review and CodeQL upload require validation on GitHub, not just act. Enable dependency graph, Dependabot alerts/security updates, and advanced CodeQL scanning in repository settings (disable default CodeQL setup when using this workflow). Private repositories may require an eligible security plan. Require **Verify**, **Dependency audit**, **Dependency review**, and **CodeQL** in the main branch ruleset, disallow bypasses, and require code-scanning results with the lowest available alert thresholds: a successful CodeQL upload alone does not block newly detected alerts. Require reviewed pull requests and SHA-pinned actions in repository Actions policy where available. Workflow files alone cannot enforce these owner-controlled settings.
+
+Existing advisories are not suppressed: the audit gate remains red until dependencies are remediated. No automatic `audit fix --force`, lifecycle-script exceptions, or vulnerability allowlist is used. License restrictions are not imposed without a project-approved license policy.
 
 ## License
 
